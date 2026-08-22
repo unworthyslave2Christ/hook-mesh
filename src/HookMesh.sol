@@ -257,31 +257,46 @@ contract HookMesh {
                     TEST-ONLY STORAGE INSPECTION
     //////////////////////////////////////////////////////////////*/
 
-    /*
-     * IMPORTANT:
-     *
-     * This function exists only to prove that the delegated
-     * module wrote into HookMesh's storage.
-     *
-     * It should be removed from the production implementation.
-     */
-    function testModuleState()
+    function getModuleState(
+        bytes32 moduleId
+    )
         external
-        view
-        returns (
-            uint256 calls,
-            address lastSender,
-            uint256 lastValue
-        )
+        returns (bytes memory state)
     {
-        TestModuleStorage.Layout storage s =
-            TestModuleStorage.layout();
+        HookMeshStorage.Layout storage s =
+            HookMeshStorage.layout();
 
-        return (
-            s.beforeSwapCalls,
-            s.lastSender,
-            s.lastValue
-        );
+        uint256 moduleIndex = s.moduleById[moduleId];
+
+        if (moduleIndex == 0) {
+            revert HookMesh__InvalidModule();
+        }
+
+        HookMeshStorage.ModuleRecord storage module =
+            s.modules[moduleIndex];
+
+        if (!module.enabled) {
+            revert HookMesh__InvalidModule();
+        }
+
+        (bool success, bytes memory result) =
+            module.implementation.delegatecall(
+                abi.encodeCall(
+                    IHookMeshModule.getModuleState,
+                    ()
+                )
+            );
+
+        if (!success) {
+            assembly {
+                revert(
+                    add(result, 32),
+                    mload(result)
+                )
+            }
+        }
+
+        return abi.decode(result, (bytes));
     }
 
     /*//////////////////////////////////////////////////////////////

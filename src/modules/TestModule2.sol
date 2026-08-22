@@ -5,7 +5,7 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
 
 import {IHookMeshModule} from "../interfaces/IHookMeshModule.sol";
-import {TestModuleStorage} from "../libraries/TestModuleStorage.sol";
+import {TestModuleStorage2} from "../libraries/TestModuleStorage2.sol";
 
 contract TestModule2 is IHookMeshModule {
 
@@ -83,8 +83,8 @@ contract TestModule2 is IHookMeshModule {
         external
         returns (bytes memory)
     {
-        TestModuleStorage.Layout storage s =
-            TestModuleStorage.layout();
+        TestModuleStorage2.Layout storage s =
+            TestModuleStorage2.layout();
 
         s.beforeSwapCalls++;
 
@@ -97,8 +97,23 @@ contract TestModule2 is IHookMeshModule {
          */
         s.lastSender = msg.sender;
 
-        s.lastValue = 123456;
+        s.lastValue = 654321;
 
         return "";
+    }
+
+
+    function getModuleState()
+        external
+        returns (bytes memory)
+    {
+        TestModuleStorage2.Layout storage s =
+            TestModuleStorage2.layout();
+
+        return abi.encode(
+            s.beforeSwapCalls,
+            s.lastSender,
+            s.lastValue
+        );
     }
 }

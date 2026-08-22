@@ -6,6 +6,7 @@ import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
 
 import {IHookMeshModule} from "../interfaces/IHookMeshModule.sol";
 import {TestModuleStorage} from "../libraries/TestModuleStorage.sol";
+import {console2} from "forge-std/console2.sol";
 
 contract TestModule is IHookMeshModule {
 
@@ -87,6 +88,7 @@ contract TestModule is IHookMeshModule {
             TestModuleStorage.layout();
 
         s.beforeSwapCalls++;
+        console2.log("s.beforeSwapCalls: ", s.beforeSwapCalls);
 
         /*
          * This is the critical assertion we are proving.
@@ -100,5 +102,19 @@ contract TestModule is IHookMeshModule {
         s.lastValue = 123456;
 
         return "";
+    }
+
+    function getModuleState()
+        external
+        returns (bytes memory)
+    {
+        TestModuleStorage.Layout storage s =
+            TestModuleStorage.layout();
+
+        return abi.encode(
+            s.beforeSwapCalls,
+            s.lastSender,
+            s.lastValue
+        );
     }
 }

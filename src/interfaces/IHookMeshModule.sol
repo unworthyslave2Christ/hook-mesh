@@ -36,4 +36,8 @@ interface IHookMeshModule {
         IPoolManager.SwapParams calldata params,
         bytes calldata hookData
     ) external returns (bytes memory);
+
+    function getModuleState()
+        external
+        returns (bytes memory);
 }

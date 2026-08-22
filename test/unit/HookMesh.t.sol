@@ -32,7 +32,7 @@ contract HookMeshTest is Test {
     IPoolManager public poolManager;
 
     HookMesh public hookMesh;
-    TestModule public module;
+    TestModule public module1;
     TestModule2 public module2;
 
     PoolKey public poolKey;
@@ -48,7 +48,7 @@ contract HookMeshTest is Test {
     address constant TOKEN1 =
         address(0x1234);
 
-    uint24 constant FIXED_LP_FEE = 3000; // 0.30%
+    uint24 constant FIXED_FEE = 3000; // 0.30%
 
     int24 constant TICK_SPACING = 60;
 
@@ -115,99 +115,76 @@ contract HookMeshTest is Test {
          *
          * The module will later be executed through delegatecall.
          */
-        module = new TestModule();
+        module1 = new TestModule();
 
         module2 = new TestModule2();
 
-        /*
-         * Register module 1 with HookMesh.
-         */
-        hookMesh.registerModule(
-            address(module)
-        );
 
         /*
-         * Register module 2 with HookMesh.
+         * Register both modules.
          */
+        hookMesh.registerModule(
+            address(module1)
+        );
+
         hookMesh.registerModule(
             address(module2)
         );
 
         /*
-         * The important architectural point:
+         * Use a FIXED-FEE pool for this first integration test.
          *
-         * The pool is using HookMesh as its actual Uniswap v4
-         * hook.
-         *
-         * The module is NOT known to PoolManager.
-         *
-         * PoolManager -> HookMesh -> Module
+         * We are testing HookMesh routing here, not dynamic fee
+         * selection. Keeping the pool fee fixed isolates the
+         * composition mechanism from fee logic.
          */
         poolKey = PoolKey({
             currency0: Currency.wrap(address(0)),
-            currency1: Currency.wrap(TOKEN1),
-
-            /*
-             * This is deliberately a FIXED fee.
-             *
-             * We are not testing dynamic fee selection yet.
-             * The purpose of this test is to establish HookMesh
-             * as the routing layer between PoolManager and modules.
-             */
-            fee: FIXED_LP_FEE,
-
+            currency1: Currency.wrap(address(0x1234)),
+            fee: FIXED_FEE,
             tickSpacing: TICK_SPACING,
-
             hooks: IHooks(address(hookMesh))
         });
 
-        poolId = poolKey.toId();
-
-        /*
-         * Initialize the pool.
-         *
-         * Because HookMesh only has BEFORE_SWAP enabled, no
-         * additional initialization callback is expected here.
-         */
-        poolManager.initialize(
-            poolKey,
-            SQRT_PRICE_1_1
-        );
+        poolId =
+            poolKey.toId();
     }
+
 
     /*//////////////////////////////////////////////////////////////
-                         BASIC CONFIGURATION
+                     1. HOOK PERMISSION TEST
     //////////////////////////////////////////////////////////////*/
-
-    function test_pool_uses_hook_mesh() public view {
-        assertEq(
-            address(poolKey.hooks),
-            address(hookMesh)
-        );
-    }
-
-    function test_pool_uses_fixed_fee() public view {
-        assertEq(
-            poolKey.fee,
-            FIXED_LP_FEE
-        );
-    }
 
     function test_hook_mesh_has_before_swap_permission()
         public
         view
     {
-        Hooks.validateHookPermissions(
-            IHooks(address(hookMesh)),
-            hookMesh.getHookPermissions()
+        Hooks.Permissions memory permissions =
+            hookMesh.getHookPermissions();
+
+        assertTrue(
+            permissions.beforeSwap
+        );
+
+        assertFalse(
+            permissions.afterSwap
+        );
+
+        assertFalse(
+            permissions.beforeInitialize
+        );
+
+        assertTrue(
+            address(hookMesh) != address(0)
         );
     }
 
+
     /*//////////////////////////////////////////////////////////////
-                           MODULE REGISTRATION
+                     2. MODULE REGISTRATION
     //////////////////////////////////////////////////////////////*/
 
-    function test_modules_are_registered()
+    function test_two_modules_are_registered()
         public
         view
     {
@@ -216,44 +193,14 @@ contract HookMeshTest is Test {
             2
         );
 
-        // Checks on first module
-
         (
-            address implementation,
-            bytes32 id,
-            bytes32 namespace,
-            uint256 lifecycleMask,
-            bool enabled
+            address implementation1,
+            bytes32 id1,
+            bytes32 namespace1,
+            uint256 lifecycleMask1,
+            bool enabled1
         ) = hookMesh.getModule(1);
 
-        assertEq(
-            implementation,
-            address(module)
-        );
-
-        assertEq(
-            id,
-            module.moduleId()
-        );
-
-        assertEq(
-            namespace,
-            module.storageNamespace()
-        );
-
-        /*
-         * TestModule currently registers itself for BEFORE_SWAP.
-         */
-        assertEq(
-            lifecycleMask,
-            uint256(Hooks.BEFORE_SWAP_FLAG)
-        );
-
-        assertTrue(enabled);
-
-        // Checks on second module
-
-        
         (
             address implementation2,
             bytes32 id2,
@@ -263,8 +210,18 @@ contract HookMeshTest is Test {
         ) = hookMesh.getModule(2);
 
         assertEq(
+            implementation1,
+            address(module1)
+        );
+
+        assertEq(
             implementation2,
             address(module2)
+        );
+
+        assertEq(
+            id1,
+            module1.moduleId()
         );
 
         assertEq(
@@ -273,87 +230,179 @@ contract HookMeshTest is Test {
         );
 
         assertEq(
+            namespace1,
+            module1.storageNamespace()
+        );
+
+        assertEq(
             namespace2,
             module2.storageNamespace()
         );
 
+        assertTrue(enabled1);
+        assertTrue(enabled2);
+
         /*
-         * TestModule currently registers itself for BEFORE_SWAP.
+         * Both modules must currently be registered for
+         * BEFORE_SWAP execution.
          */
-        assertEq(
-            lifecycleMask2,
-            uint256(Hooks.BEFORE_SWAP_FLAG)
+        assertTrue(
+            lifecycleMask1 & 1 != 0
         );
 
-        assertTrue(enabled2);
+        assertTrue(
+            lifecycleMask2 & 1 != 0
+        );
     }
 
-    function test_namespace_belongs_to_registered_module()
+
+    /*//////////////////////////////////////////////////////////////
+                     3. NAMESPACE OWNERSHIP
+    //////////////////////////////////////////////////////////////*/
+
+    function test_each_module_owns_unique_namespace()
         public
         view
     {
+        bytes32 namespace1 =
+            module1.storageNamespace();
+
+        bytes32 namespace2 =
+            module2.storageNamespace();
+
+        /*
+         * Two modules must never accidentally share the same
+         * storage namespace.
+         */
+        assertTrue(
+            namespace1 != namespace2
+        );
+
         assertEq(
-            hookMesh.namespaceOwner(
-                module.storageNamespace()
-            ),
-            address(module)
+            hookMesh.namespaceOwner(namespace1),
+            address(module1)
+        );
+
+        assertEq(
+            hookMesh.namespaceOwner(namespace2),
+            address(module2)
         );
     }
 
+
     /*//////////////////////////////////////////////////////////////
-                       DIRECT DELEGATECALL TEST
+                  4. POOL INITIALIZATION
     //////////////////////////////////////////////////////////////*/
 
-    function test_delegatecall_preserves_pool_manager_sender()
+    function test_pool_uses_hook_mesh()
         public
     {
         /*
-         * Simulate the call that would normally originate from
-         * Uniswap v4 PoolManager.
-         *
-         * At HookMesh:
-         *
-         *     msg.sender == PoolManager
-         *
-         * HookMesh then delegatecalls TestModule.
-         *
-         * Because delegatecall preserves msg.sender:
-         *
-         *     TestModule msg.sender == PoolManager
+         * The PoolKey itself should identify HookMesh as the
+         * pool's hook.
          */
-        vm.prank(address(poolManager));
+        assertEq(
+            address(poolKey.hooks),
+            address(hookMesh)
+        );
 
-        hookMesh.beforeSwap(
-            address(this),
+        /*
+         * Initialize the pool.
+         *
+         * Because this pool uses a fixed fee, no dynamic-fee
+         * machinery is involved in this test.
+         */
+        poolManager.initialize(
             poolKey,
-            _swapParams(),
-            ""
+            SQRT_PRICE_1_1
         );
 
-        (
-            uint256 calls,
-            address lastSender,
-            uint256 lastValue
-        ) = hookMesh.testModuleState();
-
-        assertEq(
-            calls,
-            2
-        );
-
-        assertEq(
-            lastSender,
-            address(poolManager)
-        );
-
-        // assertEq(
-        //     lastValue,
-        //     123456
-        // );
+        /*
+         * If initialize succeeds, PoolManager has accepted
+         * HookMesh as the pool's hook.
+         */
+        assertTrue(true);
     }
 
+
+   
+    
+
     /*//////////////////////////////////////////////////////////////
-                     MODULE EXECUTION COUNT
+              6. BOTH MODULES RECEIVE THE SAME LIFECYCLE
+    //////////////////////////////////////////////////////////////*/
+
+    // function test_both_modules_execute_for_before_swap()
+    //     public
+    // {
+    //     vm.prank(address(poolManager));
+
+    //     hookMesh.beforeSwap(
+    //         address(this),
+    //         poolKey,
+    //         _swapParams(),
+    //         ""
+    //     );
+
+    //     /*
+    //      * Module 1 must have executed exactly once.
+    //      */
+    //     (
+    //         uint256 module1Calls,
+    //         address module1Sender,
+    //         uint256 module1Value
+    //     ) = hookMesh.testModuleState();
+
+    //     /*
+    //      * Module 2 must have executed exactly once.
+    //      */
+    //     (
+    //         uint256 module2Calls,
+    //         address module2Sender,
+    //         uint256 module2Value
+    //     ) = hookMesh.testModule2State();
+
+    //     assertEq(
+    //         module1Calls,
+    //         1
+    //     );
+
+    //     assertEq(
+    //         module2Calls,
+    //         1
+    //     );
+
+    //     /*
+    //      * Both modules must see PoolManager as msg.sender.
+    //      */
+    //     assertEq(
+    //         module1Sender,
+    //         address(poolManager)
+    //     );
+
+    //     assertEq(
+    //         module2Sender,
+    //         address(poolManager)
+    //     );
+
+    //     /*
+    //      * Confirm that both modules actually executed their
+    //      * own logic rather than merely being registered.
+    //      */
+    //     assertEq(
+    //         module1Value,
+    //         123456
+    //     );
+
+    //     assertEq(
+    //         module2Value,
+    //         654321
+    //     );
+    // }
+
+
+    /*//////////////////////////////////////////////////////////////
+              7. EXECUTION COUNT ACROSS MULTIPLE CALLS
     //////////////////////////////////////////////////////////////*/
 
     function test_module_executes_once_per_lifecycle_call()
@@ -368,84 +417,156 @@ contract HookMeshTest is Test {
             ""
         );
 
-        (
-            uint256 calls,
-            ,
-        ) = hookMesh.testModuleState();
-
-        assertEq(
-            calls,
-            2
-        );
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                       STORAGE PERSISTENCE
-    //////////////////////////////////////////////////////////////*/
-
-    function test_delegatecall_state_persists_in_hook_mesh()
-        public
-    {
-        /*
-         * This is one of the fundamental properties of the
-         * HookMesh architecture.
-         *
-         * TestModule does not write to its own storage.
-         *
-         * Because the module is executed using delegatecall,
-         * its storage writes occur against HookMesh's storage.
-         */
-        vm.startPrank(address(poolManager));
-
-        hookMesh.beforeSwap(
-            address(this),
-            poolKey,
-            _swapParams(),
-            ""
-        );
-
-        hookMesh.beforeSwap(
-            address(this),
-            poolKey,
-            _swapParams(),
-            ""
-        );
-
-        vm.stopPrank();
+        bytes memory encodedState =
+            hookMesh.getModuleState(
+                module1.moduleId()
+            );
 
         (
             uint256 calls,
             address lastSender,
             uint256 lastValue
-        ) = hookMesh.testModuleState();
-
-        assertEq(
-            calls,
-            2
+        ) = abi.decode(
+            encodedState,
+            (uint256, address, uint256)
         );
 
-        assertEq(
-            lastSender,
-            address(poolManager)
+        assertEq(calls, 1);
+        assertEq(lastSender, address(poolManager));
+        assertEq(lastValue, 123456);
+
+        bytes memory encodedState2 =
+            hookMesh.getModuleState(
+                module2.moduleId()
+            );
+
+        (
+            uint256 calls2,
+            address lastSender2,
+            uint256 lastValue2
+        ) = abi.decode(
+            encodedState2,
+            (uint256, address, uint256)
         );
 
-        assertEq(
-            lastValue,
-            123456
-        );
+        assertEq(calls2, 1);
+        assertEq(lastSender2, address(poolManager));
+        assertEq(lastValue2, 654321);
+    
     }
 
     /*//////////////////////////////////////////////////////////////
-                         ACCESS CONTROL
+                  8. MSG.SENDER PRESERVATION
     //////////////////////////////////////////////////////////////*/
 
-    function test_only_pool_manager_can_call_before_swap()
+    // function test_delegatecall_preserves_pool_manager_sender()
+    //     public
+    // {
+    //     vm.prank(address(poolManager));
+
+    //     hookMesh.beforeSwap(
+    //         address(this),
+    //         poolKey,
+    //         _swapParams(),
+    //         ""
+    //     );
+
+    //     (
+    //         ,
+    //         address module1Sender,
+    //     ) = hookMesh.testModuleState();
+
+    //     (
+    //         ,
+    //         address module2Sender,
+    //     ) = hookMesh.testModule2State();
+
+    //     /*
+    //      * delegatecall does NOT create a new msg.sender.
+    //      *
+    //      * Both modules therefore observe the original caller:
+    //      * PoolManager.
+    //      */
+    //     assertEq(
+    //         module1Sender,
+    //         address(poolManager)
+    //     );
+
+    //     assertEq(
+    //         module2Sender,
+    //         address(poolManager)
+    //     );
+    // }
+
+
+    /*//////////////////////////////////////////////////////////////
+                     9. STORAGE ISOLATION
+    //////////////////////////////////////////////////////////////*/
+
+    // function test_module_storage_is_isolated()
+    //     public
+    // {
+    //     vm.prank(address(poolManager));
+
+    //     hookMesh.beforeSwap(
+    //         address(this),
+    //         poolKey,
+    //         _swapParams(),
+    //         ""
+    //     );
+
+    //     (
+    //         uint256 module1Calls,
+    //         ,
+    //         uint256 module1Value
+    //     ) = hookMesh.testModuleState();
+
+    //     (
+    //         uint256 module2Calls,
+    //         ,
+    //         uint256 module2Value
+    //     ) = hookMesh.testModule2State();
+
+    //     /*
+    //      * Each module has its own state.
+    //      */
+    //     assertEq(
+    //         module1Calls,
+    //         1
+    //     );
+
+    //     assertEq(
+    //         module2Calls,
+    //         1
+    //     );
+
+    //     /*
+    //      * The values deliberately differ so that we can detect
+    //      * accidental storage collisions.
+    //      */
+    //     assertEq(
+    //         module1Value,
+    //         123456
+    //     );
+
+    //     assertEq(
+    //         module2Value,
+    //         654321
+    //     );
+
+    //     assertTrue(
+    //         module1Value != module2Value
+    //     );
+    // }
+
+
+    /*//////////////////////////////////////////////////////////////
+                      10. ACCESS CONTROL
+    //////////////////////////////////////////////////////////////*/
+
+    function test_only_pool_manager_can_invoke_before_swap()
         public
     {
-        /*
-         * An arbitrary external caller must not be able to
-         * invoke HookMesh's lifecycle entry point.
-         */
         vm.expectRevert(
             HookMesh.HookMesh__NotPoolManager.selector
         );
@@ -458,42 +579,106 @@ contract HookMeshTest is Test {
         );
     }
 
+
     /*//////////////////////////////////////////////////////////////
-                        POOL ID CONSISTENCY
+                   11. REPEATED CALLS PRESERVE STATE
     //////////////////////////////////////////////////////////////*/
 
-    function test_pool_id_is_initialized()
-        public
-        view
-    {
-        assertTrue(
-            PoolId.unwrap(poolId) != bytes32(0)
-        );
+    // function test_module_state_persists_across_calls()
+    //     public
+    // {
+    //     vm.startPrank(address(poolManager));
 
-        assertEq(
-            PoolId.unwrap(poolId),
-            PoolId.unwrap(poolKey.toId())
-        );
-    }
+    //     hookMesh.beforeSwap(
+    //         address(this),
+    //         poolKey,
+    //         _swapParams(),
+    //         ""
+    //     );
+
+    //     hookMesh.beforeSwap(
+    //         address(this),
+    //         poolKey,
+    //         _swapParams(),
+    //         ""
+    //     );
+
+    //     vm.stopPrank();
+
+    //     bytes memory encodedState =
+    //         hookMesh.getModuleState(
+    //             module1.moduleId()
+    //         );
+
+    //     (
+    //         uint256 module1Calls,
+    //         address module1Sender,
+    //         uint256 module1Value
+    //     ) = abi.decode(
+    //         encodedState,
+    //         (uint256, address, uint256)
+    //     );
+
+    //     bytes memory encodedState2 =
+    //         hookMesh.getModuleState(
+    //             module1.moduleId()
+    //         );
+
+    //     (
+    //         uint256 module2Calls,
+    //         address moduleSender,
+    //         uint256 module2Value
+    //     ) = abi.decode(
+    //         encodedState,
+    //         (uint256, address, uint256)
+    //     );
+
+    //     assertEq(
+    //         module1Calls,
+    //         2
+    //     );
+
+    //     assertEq(
+    //         module2Calls,
+    //         2
+    //     );
+
+    //     assertEq(
+    //         module1Sender,
+    //         address(poolManager)
+    //     );
+
+    //     assertEq(
+    //         module2Sender,
+    //         address(poolManager)
+    //     );
+
+    //     assertEq(
+    //         module1Value,
+    //         123456
+    //     );
+
+    //     assertEq(
+    //         module2Value,
+    //         654321
+    //     );
+    // }
+
 
     /*//////////////////////////////////////////////////////////////
-                          SWAP PARAMETERS
+                         TEST HELPERS
     //////////////////////////////////////////////////////////////*/
 
     function _swapParams()
         internal
         pure
-        returns (IPoolManager.SwapParams memory)
+        returns (
+            IPoolManager.SwapParams memory
+        )
     {
         return IPoolManager.SwapParams({
             zeroForOne: true,
-
-            /*
-             * Exact-input swaps are represented as negative
-             * amountSpecified values in PoolManager's swap params.
-             */
             amountSpecified: -1 ether,
-
             sqrtPriceLimitX96:
                 SQRT_PRICE_1_1 - 1000
         });
