@@ -6,6 +6,7 @@ import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
 
 import {IHookMeshModule} from "../interfaces/IHookMeshModule.sol";
 import {TestModuleStorage2} from "../libraries/TestModuleStorage2.sol";
+import {console2} from "forge-std/console2.sol";
 
 contract TestModule2 is IHookMeshModule {
 
@@ -24,7 +25,22 @@ contract TestModule2 is IHookMeshModule {
             )
         );
 
-    uint256 internal constant BEFORE_SWAP_FLAG = 1 << 7;
+    uint256 internal constant BEFORE_SWAP_FLAG =
+        1 << 7;
+
+    /*//////////////////////////////////////////////////////////////
+                              OWNERSHIP
+    //////////////////////////////////////////////////////////////*/
+
+    address public immutable override owner;
+
+    /*//////////////////////////////////////////////////////////////
+                           CONSTRUCTOR
+    //////////////////////////////////////////////////////////////*/
+
+    constructor() {
+        owner = msg.sender;
+    }
 
     /*//////////////////////////////////////////////////////////////
                           MODULE METADATA
@@ -88,23 +104,32 @@ contract TestModule2 is IHookMeshModule {
 
         s.beforeSwapCalls++;
 
+        console2.log(
+            "s.beforeSwapCalls: ",
+            s.beforeSwapCalls
+        );
+
         /*
-         * This is the critical assertion we are proving.
+         * Because HookMesh invokes this function through
+         * delegatecall, msg.sender remains the original caller
+         * of HookMesh.
          *
-         * Because HookMesh uses delegatecall:
-         *
-         * msg.sender is still PoolManager.
+         * In the integration test this is PoolManager.
          */
         s.lastSender = msg.sender;
 
-        s.lastValue = 654321;
+        s.lastValue = 123456;
 
         return "";
     }
 
+    /*//////////////////////////////////////////////////////////////
+                           TEST STATE
+    //////////////////////////////////////////////////////////////*/
 
     function getModuleState()
         external
+        view
         returns (bytes memory)
     {
         TestModuleStorage2.Layout storage s =

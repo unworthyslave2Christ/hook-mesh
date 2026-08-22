@@ -25,7 +25,22 @@ contract TestModule is IHookMeshModule {
             )
         );
 
-    uint256 internal constant BEFORE_SWAP_FLAG = 1 << 7;
+    uint256 internal constant BEFORE_SWAP_FLAG =
+        1 << 7;
+
+    /*//////////////////////////////////////////////////////////////
+                              OWNERSHIP
+    //////////////////////////////////////////////////////////////*/
+
+    address public immutable override owner;
+
+    /*//////////////////////////////////////////////////////////////
+                           CONSTRUCTOR
+    //////////////////////////////////////////////////////////////*/
+
+    constructor() {
+        owner = msg.sender;
+    }
 
     /*//////////////////////////////////////////////////////////////
                           MODULE METADATA
@@ -88,14 +103,18 @@ contract TestModule is IHookMeshModule {
             TestModuleStorage.layout();
 
         s.beforeSwapCalls++;
-        console2.log("s.beforeSwapCalls: ", s.beforeSwapCalls);
+
+        console2.log(
+            "s.beforeSwapCalls: ",
+            s.beforeSwapCalls
+        );
 
         /*
-         * This is the critical assertion we are proving.
+         * Because HookMesh invokes this function through
+         * delegatecall, msg.sender remains the original caller
+         * of HookMesh.
          *
-         * Because HookMesh uses delegatecall:
-         *
-         * msg.sender is still PoolManager.
+         * In the integration test this is PoolManager.
          */
         s.lastSender = msg.sender;
 
@@ -104,8 +123,13 @@ contract TestModule is IHookMeshModule {
         return "";
     }
 
+    /*//////////////////////////////////////////////////////////////
+                           TEST STATE
+    //////////////////////////////////////////////////////////////*/
+
     function getModuleState()
         external
+        view
         returns (bytes memory)
     {
         TestModuleStorage.Layout storage s =

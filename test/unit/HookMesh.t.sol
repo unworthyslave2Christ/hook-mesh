@@ -456,6 +456,196 @@ contract HookMeshTest is Test {
     }
 
     /*//////////////////////////////////////////////////////////////
+             8. ALL MODULES EXECUTE ON EVERY LIFECYCLE CALL
+    //////////////////////////////////////////////////////////////*/
+
+    function test_all_modules_execute_once_per_lifecycle_call()
+        public
+    {
+        /*
+        * ----------------------------------------------------------
+        * FIRST LIFECYCLE CALL
+        * ----------------------------------------------------------
+        */
+
+        vm.prank(address(poolManager));
+
+        hookMesh.beforeSwap(
+            address(this),
+            poolKey,
+            _swapParams(),
+            ""
+        );
+
+        bytes memory state1 =
+            hookMesh.getModuleState(
+                module1.moduleId()
+            );
+
+        (
+            uint256 module1CallsAfterFirst,
+            address module1Sender,
+            uint256 module1Value
+        ) = abi.decode(
+            state1,
+            (uint256, address, uint256)
+        );
+
+        bytes memory state2 =
+            hookMesh.getModuleState(
+                module2.moduleId()
+            );
+
+        (
+            uint256 module2CallsAfterFirst,
+            address module2Sender,
+            uint256 module2Value
+        ) = abi.decode(
+            state2,
+            (uint256, address, uint256)
+        );
+
+        assertEq(
+            module1CallsAfterFirst,
+            1,
+            "Module 1 must execute once"
+        );
+
+        assertEq(
+            module2CallsAfterFirst,
+            1,
+            "Module 2 must execute once"
+        );
+
+        assertEq(
+            module1Sender,
+            address(poolManager)
+        );
+
+        assertEq(
+            module2Sender,
+            address(poolManager)
+        );
+
+        assertEq(
+            module1Value,
+            123456
+        );
+
+        assertEq(
+            module2Value,
+            654321
+        );
+
+
+        /*
+        * ----------------------------------------------------------
+        * SECOND LIFECYCLE CALL
+        * ----------------------------------------------------------
+        */
+
+        vm.prank(address(poolManager));
+
+        hookMesh.beforeSwap(
+            address(this),
+            poolKey,
+            _swapParams(),
+            ""
+        );
+
+
+        /*
+        * ----------------------------------------------------------
+        * READ MODULE 1
+        * ----------------------------------------------------------
+        */
+
+        state1 =
+            hookMesh.getModuleState(
+                module1.moduleId()
+            );
+
+        (
+            uint256 module1CallsAfterSecond,
+            address module1SenderAfterSecond,
+            uint256 module1ValueAfterSecond
+        ) = abi.decode(
+            state1,
+            (uint256, address, uint256)
+        );
+
+
+        /*
+        * ----------------------------------------------------------
+        * READ MODULE 2
+        * ----------------------------------------------------------
+        */
+
+        state2 =
+            hookMesh.getModuleState(
+                module2.moduleId()
+            );
+
+        (
+            uint256 module2CallsAfterSecond,
+            address module2SenderAfterSecond,
+            uint256 module2ValueAfterSecond
+        ) = abi.decode(
+            state2,
+            (uint256, address, uint256)
+        );
+
+
+        /*
+        * ----------------------------------------------------------
+        * ASSERT EXACTLY ONE ADDITIONAL EXECUTION
+        * ----------------------------------------------------------
+        */
+
+        assertEq(
+            module1CallsAfterSecond,
+            module1CallsAfterFirst + 1,
+            "Module 1 must execute exactly once per lifecycle call"
+        );
+
+        assertEq(
+            module2CallsAfterSecond,
+            module2CallsAfterFirst + 1,
+            "Module 2 must execute exactly once per lifecycle call"
+        );
+
+
+        /*
+        * msg.sender must remain PoolManager.
+        */
+
+        assertEq(
+            module1SenderAfterSecond,
+            address(poolManager)
+        );
+
+        assertEq(
+            module2SenderAfterSecond,
+            address(poolManager)
+        );
+
+
+        /*
+        * Each module must retain its own state.
+        */
+
+        assertEq(
+            module1ValueAfterSecond,
+            123456
+        );
+
+        assertEq(
+            module2ValueAfterSecond,
+            654321
+        );
+    }
+
+    /*//////////////////////////////////////////////////////////////
                   8. MSG.SENDER PRESERVATION
     //////////////////////////////////////////////////////////////*/
 

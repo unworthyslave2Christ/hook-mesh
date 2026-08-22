@@ -5,6 +5,7 @@ import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 
 interface IHookMeshModule {
+    
     function moduleId()
         external
         pure
@@ -24,6 +25,17 @@ interface IHookMeshModule {
         external
         pure
         returns (uint256);
+
+    /**
+     * @notice Address authorized to enable/disable this module.
+     *
+     * HookMesh uses this value when validating module
+     * lifecycle-state changes.
+     */
+    function owner()
+        external
+        view
+        returns (address);
 
     function supportsHookMesh()
         external
