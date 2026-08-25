@@ -1428,6 +1428,26 @@ contract HookMeshTest is Test {
     }
 
 
+
+    function test_module_owner_can_disable_module()
+        public
+    {
+        bytes32 moduleId = module1.moduleId();
+
+        hookMesh.disableModule(moduleId);
+
+        (
+            ,
+            ,
+            ,
+            ,
+            bool enabled
+        ) = hookMesh.getModule(1);
+
+        assertFalse(enabled);
+    }
+
+
     /*//////////////////////////////////////////////////////////////
                          TEST HELPERS
     //////////////////////////////////////////////////////////////*/
