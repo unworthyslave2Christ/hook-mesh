@@ -638,6 +638,8 @@ contract HookMesh {
         ) != 0;
     }
 
+    
+
     function namespaceOwner(
         bytes32 namespace
     )
@@ -748,7 +750,7 @@ contract HookMesh {
             }
         }
 
-        return data;
+        return abi.decode(data, (bytes));
     }
 
     /*//////////////////////////////////////////////////////////////

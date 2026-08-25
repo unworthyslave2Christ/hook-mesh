@@ -5,17 +5,20 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
 
 import {IHookMeshModule} from "../interfaces/IHookMeshModule.sol";
-import {TestModuleStorage2} from "../libraries/TestModuleStorage2.sol";
-import {console2} from "forge-std/console2.sol";
 
-contract TestModule2 is IHookMeshModule {
+import {TestModuleNoBeforeSwapStorage} from "../libraries/TestModuleNoBeforeSwapStorage.sol";
+
+
+// contract TestModuleNoBeforeSwap is IHookMeshModule { // TestModuleNoBeforeSwap lacks beforeSwapModule as specified in IHookMeshModule, and hence cannot implement IHookMeshModule
+
+contract TestModuleNoBeforeSwap {
 
     /*//////////////////////////////////////////////////////////////
                               CONSTANTS
     //////////////////////////////////////////////////////////////*/
 
     bytes32 internal constant MODULE_ID =
-        keccak256("hookmesh.test-module-2");
+        keccak256("hookmesh.test-module-no-before-swap");
 
     bytes32 internal constant STORAGE_NAMESPACE =
         keccak256(
@@ -25,14 +28,11 @@ contract TestModule2 is IHookMeshModule {
             )
         );
 
-    uint256 internal constant BEFORE_SWAP_FLAG =
-        1 << 7;
-
     /*//////////////////////////////////////////////////////////////
                               OWNERSHIP
     //////////////////////////////////////////////////////////////*/
 
-    address public immutable override owner;
+    address public immutable  owner;
 
     /*//////////////////////////////////////////////////////////////
                            CONSTRUCTOR
@@ -70,12 +70,15 @@ contract TestModule2 is IHookMeshModule {
         return STORAGE_NAMESPACE;
     }
 
+    /*
+     * This module deliberately advertises NO lifecycle.
+     */
     function lifecycleMask()
         external
         pure
         returns (uint256)
     {
-        return BEFORE_SWAP_FLAG;
+        return 0;
     }
 
     function supportsHookMesh()
@@ -86,59 +89,18 @@ contract TestModule2 is IHookMeshModule {
         return IHookMeshModule.supportsHookMesh.selector;
     }
 
-    /*//////////////////////////////////////////////////////////////
-                           BEFORE SWAP
-    //////////////////////////////////////////////////////////////*/
-
-    function beforeSwapModule(
-        address,
-        PoolKey calldata,
-        IPoolManager.SwapParams calldata,
-        bytes calldata
-    )
-        external
-        returns (bytes memory)
-    {
-        TestModuleStorage2.Layout storage s =
-            TestModuleStorage2.layout();
-
-        s.beforeSwapCalls++;
-
-        console2.log(
-            "s.beforeSwapCalls: ",
-            s.beforeSwapCalls
-        );
-
-        /*
-         * Because HookMesh invokes this function through
-         * delegatecall, msg.sender remains the original caller
-         * of HookMesh.
-         *
-         * In the integration test this is PoolManager.
-         */
-        s.lastSender = msg.sender;
-
-        s.lastValue = 654321;
-
-        return "";
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                           TEST STATE
-    //////////////////////////////////////////////////////////////*/
-
     function getModuleState()
         external
         view
-        returns (bytes memory)
+        returns (uint256)
     {
-        TestModuleStorage2.Layout storage s =
-            TestModuleStorage2.layout();
-
-        return abi.encode(
-            s.beforeSwapCalls,
-            s.lastSender,
-            s.lastValue
-        );
+        return TestModuleNoBeforeSwapStorage
+            .layout()
+            .calls;
     }
+
+    /*
+     * No beforeSwapModule() implementation is required because
+     * this module does not advertise BEFORE_SWAP support.
+     */
 }
