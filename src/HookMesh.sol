@@ -2,9 +2,9 @@
 pragma solidity ^0.8.26;
 
 import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
-import {IHooks} from "v4-core/src/interfaces/IHooks.sol";
 import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 import {PoolKey} from "v4-core/src/types/PoolKey.sol";
+
 import {
     BeforeSwapDelta,
     BeforeSwapDeltaLibrary
@@ -12,28 +12,25 @@ import {
 
 import {IHookMeshModule} from "./interfaces/IHookMeshModule.sol";
 import {HookMeshStorage} from "./libraries/HookMeshStorage.sol";
-import {TestModuleStorage} from "./libraries/TestModuleStorage.sol";
-import {BaseHook} from "v4-hooks-public/src/utils/BaseHook.sol";
-
 
 
 contract HookMesh {
 
     /*//////////////////////////////////////////////////////////////
-                                CONSTANTS
+                              CONSTANTS
     //////////////////////////////////////////////////////////////*/
 
     uint256 internal constant BEFORE_SWAP_FLAG =
         1 << 7;
 
     /*//////////////////////////////////////////////////////////////
-                                 IMMUTABLES
+                              IMMUTABLES
     //////////////////////////////////////////////////////////////*/
 
     IPoolManager public immutable poolManager;
 
     /*//////////////////////////////////////////////////////////////
-                                  EVENTS
+                               EVENTS
     //////////////////////////////////////////////////////////////*/
 
     event ModuleRegistered(
@@ -55,8 +52,22 @@ contract HookMesh {
         address indexed owner
     );
 
+    /*
+     * Emitted when an eligible module reverts during a
+     * lifecycle operation.
+     *
+     * Importantly, this event does NOT cause the lifecycle
+     * operation itself to revert.
+     */
+    event ModuleLifecycleFailed(
+        bytes32 indexed moduleId,
+        address indexed implementation,
+        uint256 indexed lifecycleFlag,
+        bytes revertData
+    );
+
     /*//////////////////////////////////////////////////////////////
-                                  ERRORS
+                               ERRORS
     //////////////////////////////////////////////////////////////*/
 
     error HookMesh__NotPoolManager();
@@ -81,8 +92,6 @@ contract HookMesh {
 
     error HookMesh__InvalidModuleImplementation();
 
-    error HookMesh__DelegateCallFailed();
-
     /*//////////////////////////////////////////////////////////////
                               CONSTRUCTOR
     //////////////////////////////////////////////////////////////*/
@@ -95,9 +104,15 @@ contract HookMesh {
     }
 
     /*//////////////////////////////////////////////////////////////
-                         HOOK PERMISSIONS
+                          HOOK PERMISSIONS
     //////////////////////////////////////////////////////////////*/
 
+    /*
+     * HookMesh currently participates only in BEFORE_SWAP.
+     *
+     * This is metadata describing the lifecycle operation
+     * exposed by HookMesh to PoolManager.
+     */
     function getHookPermissions()
         public
         pure
@@ -126,8 +141,6 @@ contract HookMesh {
         permissions.afterAddLiquidityReturnDelta = false;
         permissions.afterRemoveLiquidityReturnDelta = false;
 
-        permissions.beforeSwap = true;
-
         return permissions;
     }
 
@@ -152,8 +165,8 @@ contract HookMesh {
             IHookMeshModule(implementation);
 
         /*
-         * Verify that the implementation explicitly declares
-         * HookMesh compatibility.
+         * The implementation must explicitly identify itself
+         * as a HookMesh module.
          */
         if (
             module.supportsHookMesh()
@@ -189,8 +202,7 @@ contract HookMesh {
         }
 
         /*
-         * A storage namespace can only belong to one
-         * implementation.
+         * A namespace can only belong to one module.
          */
         if (
             s.namespaceOwner[namespace] != address(0)
@@ -204,16 +216,15 @@ contract HookMesh {
         index =
             ++s.moduleCount;
 
+        /*
+         * Registration automatically enables the module.
+         */
         s.modules[index] =
             HookMeshStorage.ModuleRecord({
                 implementation: implementation,
                 moduleId: moduleId,
                 namespace: namespace,
                 lifecycleMask: lifecycleMask,
-
-                /*
-                 * Registration automatically enables the module.
-                 */
                 enabled: true
             });
 
@@ -237,12 +248,6 @@ contract HookMesh {
                          MODULE ENABLE / DISABLE
     //////////////////////////////////////////////////////////////*/
 
-    /**
-     * @notice Enable a previously registered module.
-     *
-     * Only the owner reported by the module implementation may
-     * enable it.
-     */
     function enableModule(
         bytes32 moduleId
     )
@@ -277,12 +282,6 @@ contract HookMesh {
         );
     }
 
-    /**
-     * @notice Disable a previously registered module.
-     *
-     * Only the owner reported by the module implementation may
-     * disable it.
-     */
     function disableModule(
         bytes32 moduleId
     )
@@ -322,13 +321,20 @@ contract HookMesh {
     //////////////////////////////////////////////////////////////*/
 
     /**
-     * @dev Executes a module only when:
+     * @notice Attempts to execute one module for a lifecycle.
      *
-     *      1. the module is enabled; and
-     *      2. the module declares support for the lifecycle.
+     * A module executes only when:
      *
-     * This function deliberately performs the checks inside
-     * HookMesh rather than relying on the implementation.
+     *      1. it is enabled; and
+     *      2. it advertises support for the lifecycle.
+     *
+     * If the module reverts:
+     *
+     *      - its failure is captured;
+     *      - its revert data is recorded;
+     *      - its failure is emitted;
+     *      - the HookMesh lifecycle does NOT revert;
+     *      - execution proceeds to the next module.
      */
     function _executeModule(
         HookMeshStorage.ModuleRecord storage module,
@@ -336,36 +342,26 @@ contract HookMesh {
         bytes memory callData
     )
         internal
-        returns (bytes memory returnData)
     {
         /*
-         * Runtime enable/disable gate.
+         * Disabled modules are silently skipped.
          */
         if (!module.enabled) {
-            return "";
+            return;
         }
 
         /*
-         * Lifecycle capability gate.
-         *
-         * Example:
-         *
-         * lifecycleMask = BEFORE_SWAP_FLAG
-         *
-         * means:
-         *
-         * lifecycleMask & BEFORE_SWAP_FLAG != 0
-         *
-         * and therefore beforeSwap may execute.
+         * Modules that do not advertise this lifecycle are
+         * also skipped.
          */
         if (
             (module.lifecycleMask & lifecycleFlag) == 0
         ) {
-            return "";
+            return;
         }
 
         /*
-         * delegatecall deliberately preserves msg.sender.
+         * delegatecall preserves the original msg.sender.
          *
          * PoolManager
          *      ↓
@@ -373,8 +369,7 @@ contract HookMesh {
          *      ↓ delegatecall
          * Module
          *
-         * Therefore the module observes PoolManager as
-         * msg.sender.
+         * msg.sender therefore remains PoolManager.
          */
         (
             bool success,
@@ -384,25 +379,55 @@ contract HookMesh {
                 callData
             );
 
+        /*
+         * IMPORTANT:
+         *
+         * Do NOT bubble the revert.
+         *
+         * The purpose of HookMesh is composition. One failing
+         * module must not prevent unrelated modules from
+         * participating in the same lifecycle operation.
+         */
         if (!success) {
-            /*
-             * Bubble the original module revert data rather
-             * than hiding the module's failure behind a generic
-             * error.
-             */
-            assembly {
-                revert(
-                    add(data, 0x20),
-                    mload(data)
-                )
-            }
-        }
 
-        returnData = data;
+            HookMeshStorage.Layout storage s =
+                HookMeshStorage.layout();
+
+            uint256 failureIndex =
+                s.lastLifecycleFailureCount;
+
+            s.lastLifecycleFailures[
+                failureIndex
+            ] =
+                HookMeshStorage.LifecycleFailure({
+                    moduleId: module.moduleId,
+                    implementation: module.implementation,
+                    lifecycleFlag: lifecycleFlag,
+                    revertData: data
+                });
+
+            s.lastLifecycleFailureCount =
+                failureIndex + 1;
+
+            emit ModuleLifecycleFailed(
+                module.moduleId,
+                module.implementation,
+                lifecycleFlag,
+                data
+            );
+
+            /*
+             * Deliberately return instead of reverting.
+             *
+             * The next registered module must still be given
+             * an opportunity to execute.
+             */
+            return;
+        }
     }
 
     /*//////////////////////////////////////////////////////////////
-                              BEFORE SWAP
+                           BEFORE SWAP
     //////////////////////////////////////////////////////////////*/
 
     function beforeSwap(
@@ -412,13 +437,15 @@ contract HookMesh {
         bytes calldata hookData
     )
         external
-        override
         returns (
             bytes4,
             BeforeSwapDelta,
             uint24
         )
     {
+        /*
+         * Only PoolManager may invoke the lifecycle operation.
+         */
         if (
             msg.sender != address(poolManager)
         ) {
@@ -429,13 +456,25 @@ contract HookMesh {
             HookMeshStorage.layout();
 
         /*
-         * Every registered module is considered.
+         * A lifecycle invocation begins here.
          *
-         * _executeModule() performs:
+         * Previous lifecycle failure information must not be
+         * confused with the current invocation.
+         */
+        s.lastLifecycleFailureCount = 0;
+
+        /*
+         * Execute every registered module.
          *
-         *     enabled check
-         *     lifecycle-mask check
-         *     delegatecall
+         * _executeModule() independently handles:
+         *
+         *      - enabled state;
+         *      - lifecycle capability;
+         *      - delegatecall;
+         *      - failure recording.
+         *
+         * Therefore a failure in module N does not prevent
+         * module N+1 from executing.
          */
         for (
             uint256 i = 1;
@@ -461,13 +500,20 @@ contract HookMesh {
         }
 
         /*
-         * HookMesh itself does not modify the swap delta or
-         * dynamic fee in this routing test.
+         * Lifecycle return formulation currently remains
+         * deliberately neutral.
          *
-         * Therefore return the standard zero values.
+         * Individual module failures are recorded and emitted,
+         * but are NOT inserted into the PoolManager return tuple.
+         *
+         * This leaves room for the eventual HookMesh lifecycle
+         * aggregation model.
+         *
+         * msg.sig is used instead of IHooks.beforeSwap.selector,
+         * so HookMesh does not need to implement/inherit IHooks.
          */
         return (
-            IHooks.beforeSwap.selector,
+            msg.sig,
             BeforeSwapDeltaLibrary.ZERO_DELTA,
             0
         );
@@ -482,9 +528,10 @@ contract HookMesh {
         view
         returns (uint256)
     {
-        return HookMeshStorage
-            .layout()
-            .moduleCount;
+        return
+            HookMeshStorage
+                .layout()
+                .moduleCount;
     }
 
     function getModule(
@@ -501,7 +548,9 @@ contract HookMesh {
         )
     {
         HookMeshStorage.ModuleRecord storage module =
-            HookMeshStorage.layout().modules[index];
+            HookMeshStorage
+                .layout()
+                .modules[index];
 
         return (
             module.implementation,
@@ -596,21 +645,70 @@ contract HookMesh {
         view
         returns (address)
     {
-        return HookMeshStorage
-            .layout()
-            .namespaceOwner[namespace];
+        return
+            HookMeshStorage
+                .layout()
+                .namespaceOwner[namespace];
     }
 
     /*//////////////////////////////////////////////////////////////
-                         MODULE STATE
+                       LIFECYCLE FAILURE STATE
+    //////////////////////////////////////////////////////////////*/
+
+    /**
+     * @notice Number of modules that failed during the most
+     *         recently executed lifecycle operation.
+     */
+    function lastLifecycleFailureCount()
+        external
+        view
+        returns (uint256)
+    {
+        return
+            HookMeshStorage
+                .layout()
+                .lastLifecycleFailureCount;
+    }
+
+    /**
+     * @notice Returns information about one module failure from
+     *         the most recently executed lifecycle operation.
+     */
+    function getLastLifecycleFailure(
+        uint256 index
+    )
+        external
+        view
+        returns (
+            bytes32 moduleId,
+            address implementation,
+            uint256 lifecycleFlag,
+            bytes memory revertData
+        )
+    {
+        HookMeshStorage.LifecycleFailure storage failure =
+            HookMeshStorage
+                .layout()
+                .lastLifecycleFailures[index];
+
+        return (
+            failure.moduleId,
+            failure.implementation,
+            failure.lifecycleFlag,
+            failure.revertData
+        );
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                          MODULE STATE
     //////////////////////////////////////////////////////////////*/
 
     /**
      * @notice Executes the registered module's getModuleState()
      *         function using delegatecall.
      *
-     * This is primarily useful for the TestModule integration
-     * tests.
+     * This is test/integration functionality and is independent
+     * of whether the module is currently enabled.
      */
     function getModuleState(
         bytes32 moduleId
@@ -631,12 +729,6 @@ contract HookMesh {
         HookMeshStorage.ModuleRecord storage module =
             s.modules[index];
 
-        /*
-         * State inspection is deliberately independent of
-         * enabled/lifecycle execution status.
-         *
-         * A disabled module's state must still be readable.
-         */
         (
             bool success,
             bytes memory data
@@ -660,7 +752,7 @@ contract HookMesh {
     }
 
     /*//////////////////////////////////////////////////////////////
-                            AUTHORIZATION
+                           AUTHORIZATION
     //////////////////////////////////////////////////////////////*/
 
     function _requireModuleOwner(
@@ -678,138 +770,5 @@ contract HookMesh {
         ) {
             revert HookMesh__NotModuleOwner();
         }
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                        UNSUPPORTED HOOKS
-    //////////////////////////////////////////////////////////////*/
-
-    function beforeInitialize(
-        address,
-        PoolKey calldata,
-        uint160
-    )
-        external
-        pure
-        override
-        returns (bytes4)
-    {
-        revert HookMesh__InvalidModule();
-    }
-
-    function afterInitialize(
-        address,
-        PoolKey calldata,
-        uint160,
-        int24
-    )
-        external
-        pure
-        override
-        returns (bytes4)
-    {
-        revert HookMesh__InvalidModule();
-    }
-
-    // fS
-
-    // function afterAddLiquidity(
-    //     address,
-    //     PoolKey calldata,
-    //     IPoolManager.ModifyLiquidityParams calldata,
-    //     BalanceDelta,
-    //     BalanceDelta,
-    //     bytes calldata
-    // )
-    //     external
-    //     pure
-    //     override
-    //     returns (
-    //         bytes4,
-    //         BalanceDelta
-    //     )
-    // {
-    //     revert HookMesh__InvalidModule();
-    // }
-
-    // function beforeRemoveLiquidity(
-    //     address,
-    //     PoolKey calldata,
-    //     IPoolManager.ModifyLiquidityParams calldata,
-    //     bytes calldata
-    // )
-    //     external
-    //     pure
-    //     override
-    //     returns (
-    //         bytes4,
-    //         BeforeSwapDelta
-    //     )
-    // {
-    //     revert HookMesh__InvalidModule();
-    // }
-
-    // function afterRemoveLiquidity(
-    //     address,
-    //     PoolKey calldata,
-    //     IPoolManager.ModifyLiquidityParams calldata,
-    //     BalanceDelta,
-    //     BalanceDelta,
-    //     bytes calldata
-    // )
-    //     external
-    //     pure
-    //     override
-    //     returns (
-    //         bytes4,
-    //         BalanceDelta
-    //     )
-    // {
-    //     revert HookMesh__InvalidModule();
-    // }
-
-    // function afterSwap(
-    //     address,
-    //     PoolKey calldata,
-    //     IPoolManager.SwapParams calldata,
-    //     BalanceDelta,
-    //     bytes calldata
-    // )
-    //     external
-    //     pure
-    //     override
-    //     returns (bytes4, int128)
-    // {
-    //     revert HookMesh__InvalidModule();
-    // }
-
-    function beforeDonate(
-        address,
-        PoolKey calldata,
-        uint256,
-        uint256,
-        bytes calldata
-    )
-        external
-        pure
-        override
-        returns (bytes4)
-    {
-        revert HookMesh__InvalidModule();
-    }
-
-    function afterDonate(
-        address,
-        PoolKey calldata,
-        uint256,
-        uint256,
-        bytes calldata
-    )
-        external
-        pure
-        override
-        returns (bytes4)
-    {
-        revert HookMesh__InvalidModule();
     }
 }
